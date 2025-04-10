@@ -33,7 +33,7 @@ def train_model(epochs=5, batch_size=32, learning_rate=0.01, save_path='mnist_ap
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # --- Add Normalization to Transforms --- 
+    # --- Add Normalisation to Transforms --- 
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,)) # Standard MNIST normalization
@@ -51,10 +51,10 @@ def train_model(epochs=5, batch_size=32, learning_rate=0.01, save_path='mnist_ap
     val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-    # Initialize the model
+    # Initialise the model
     model = MNISTModel().to(device)
     
-    # Define loss function and optimizer
+    # Define loss function and optimiser
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=learning_rate)
     

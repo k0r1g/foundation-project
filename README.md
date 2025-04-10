@@ -2,6 +2,10 @@
 
 A complete end-to-end application that allows users to draw a digit and have it classified using a PyTorch model trained on the MNIST dataset.
 
+# Link
+
+Link to live app: http://95.217.238.188:8501/
+
 ## Features
 
 - **PyTorch Model**: A convolutional neural network trained on the MNIST dataset.
