@@ -111,33 +111,39 @@ def main():
             
             # Check if we have a drawing and the button was clicked
             if canvas_result.image_data is not None:
-                # Show the raw drawing
-                st.write("Raw drawing (for debugging):")
-                st.image(canvas_result.image_data, caption="Raw drawing")
+                # --- REMOVED RAW DRAWING DISPLAY ---
+                # st.write("Raw drawing (for debugging):")
+                # st.image(canvas_result.image_data, caption="Raw drawing")
                 
                 # Convert image for prediction
                 if predict_clicked:
                     logger.info("Predict button clicked, processing image")
                     
                     # Get just the first channel since we're using white on black like MNIST
-                    img_array = canvas_result.image_data[:, :, 0].astype(np.uint8)
+                    # Using the improved preprocessing, we pass the whole array
+                    # img_array = canvas_result.image_data[:, :, 0].astype(np.uint8) 
+                    img_array = canvas_result.image_data # Pass the full RGBA array
                     
-                    # Create a PIL Image from the array
-                    img = Image.fromarray(img_array)
+                    # Create a PIL Image from the array (preprocessing handles conversion)
+                    # img = Image.fromarray(img_array) # Let preprocessing handle this
                     
-                    # Save raw image for debugging
-                    img.save(f"{LOG_DIR}/raw_drawing.png")
-                    logger.info(f"Saved raw drawing to {LOG_DIR}/raw_drawing.png")
-                    
-                    # Display the processed image
-                    st.write("Processed drawing (for prediction):")
-                    st.image(img, caption="Processed for prediction")
+                    # Save raw image for debugging (keep this logging if helpful)
+                    try:
+                        debug_img = Image.fromarray(img_array)
+                        debug_img.save(f"{LOG_DIR}/raw_canvas_drawing.png")
+                        logger.info(f"Saved raw canvas drawing to {LOG_DIR}/raw_canvas_drawing.png")
+                    except Exception as e:
+                        logger.error(f"Could not save raw canvas debug image: {e}")
+
+                    # --- REMOVED PROCESSED DRAWING DISPLAY ---
+                    # st.write("Processed drawing (for prediction):")
+                    # st.image(img, caption="Processed for prediction")
                     
                     # Make prediction
                     with st.spinner("Predicting..."):
                         try:
                             logger.info("Calling predict with image")
-                            predicted_digit, confidence = predictor.predict(np.array(img))
+                            predicted_digit, confidence = predictor.predict(np.array(img_array))
                             logger.info(f"Prediction received: digit={predicted_digit}, confidence={confidence:.4f}")
                             
                             # Store in session state
@@ -145,7 +151,7 @@ def main():
                             st.session_state.confidence = confidence
                             
                             # Force a rerun to update the display
-                            st.experimental_rerun()
+                            st.rerun()
                         except Exception as e:
                             logger.error(f"Error during prediction: {e}", exc_info=True)
                             st.error(f"Prediction error: {e}")
@@ -217,7 +223,7 @@ def main():
                     logger.info(f"Added to session history, now has {len(st.session_state.history)} items")
                     
                     # Force a rerun to update the display
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     logger.error(f"Invalid true label: {true_label}")
                     st.error("Please enter a valid digit (0-9)")
@@ -260,11 +266,6 @@ def main():
     else:
         # Only show "No prediction history yet" message
         st.info("No prediction history yet. Make predictions and provide feedback to build history.")
-    
-    # Deployment information
-    st.markdown("### ④ Deployed to remote server")
-    server_url = "http://65.108.44.28"  # Updated to match the reference design
-    st.code(server_url)
     
     # Display statistics in sidebar
     if db_connected:
