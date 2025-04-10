@@ -1,176 +1,155 @@
 import torch
-import torch.nn as nn
+from torch import nn
+from torch import optim
 import torch.nn.functional as F
-import torch.optim as optim
 from torchvision import datasets, transforms
+from torch.utils.data import random_split, DataLoader
 import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Define the CNN model
+# Define the ResNet model (from train_model2.py)
 class MNISTModel(nn.Module):
     def __init__(self):
-        super(MNISTModel, self).__init__()
-        # First convolutional layer
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        
-        # Second convolutional layer
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        
-        # Third convolutional layer
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
-        
-        # Max pooling layer
-        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        
-        # Fully connected layers
-        self.fc1 = nn.Linear(64 * 3 * 3, 256)
-        self.fc2 = nn.Linear(256, 10)
-        self.dropout = nn.Dropout(0.5)  # Increased dropout for better generalization
+        super().__init__()
+        self.l1 = nn.Linear(28 * 28, 64)
+        self.l2 = nn.Linear(64, 64)
+        self.l3 = nn.Linear(64, 10)
+        self.do = nn.Dropout(0.1)
 
     def forward(self, x):
-        # First conv layer + batch norm + activation + pooling
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
-        
-        # Second conv layer + batch norm + activation + pooling
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
-        
-        # Third conv layer + batch norm + activation + pooling
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))
-        
-        # Flatten the tensor for the fully connected layer
-        x = x.view(-1, 64 * 3 * 3)
-        
-        # First fully connected layer
-        x = F.relu(self.fc1(x))
-        x = self.dropout(x)
-        
-        # Output layer
-        x = self.fc2(x)
-        return x
+        # Ensure input is properly flattened
+        if len(x.shape) == 4:  # Input is [batch_size, channels, height, width]
+            x = x.view(x.size(0), -1)  # Flatten to [batch_size, 784]
+            
+        h1 = F.relu(self.l1(x))
+        h2 = F.relu(self.l2(h1))
+        do = self.do(h2 + h1)  # Residual connection
+        logits = self.l3(do)
+        return logits
 
-def train_model(epochs=10, batch_size=64, learning_rate=0.001, save_path='mnist_app/model/saved_model/mnist_cnn.pth'):
+def train_model(epochs=5, batch_size=32, learning_rate=0.01, save_path='mnist_app/model/saved_model/mnist_cnn.pth'):
     # Set up device (use GPU if available)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # Define data transformations with augmentation for better generalization
-    train_transform = transforms.Compose([
-        transforms.RandomRotation(10),
-        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+    # --- Add Normalization to Transforms --- 
+    transform = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))  # MNIST dataset mean and std
+        transforms.Normalize((0.1307,), (0.3081,)) # Standard MNIST normalization
     ])
     
-    test_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-    ])
-
-    # Load MNIST dataset
-    train_dataset = datasets.MNIST('./data', train=True, download=True, transform=train_transform)
-    test_dataset = datasets.MNIST('./data', train=False, transform=test_transform)
-
+    # Load and prepare data using the defined transform
+    train_data = datasets.MNIST('data', train=True, download=True, transform=transform)
+    test_dataset = datasets.MNIST('data', train=False, download=True, transform=transform)
+    
+    # Split training data into train and validation sets
+    train_set, val_set = random_split(train_data, [55000, 5000])
+    
     # Create data loaders
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # Initialize the model
     model = MNISTModel().to(device)
     
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
+    optimizer = optim.SGD(model.parameters(), lr=learning_rate)
     
-    # Learning rate scheduler to reduce LR as training progresses
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5, verbose=True)
-
-    # Training loop
-    train_losses = []
-    test_losses = []
-    test_accuracies = []
-    
+    # Best validation accuracy for model saving
     best_accuracy = 0.0
     
+    # Training loop
     for epoch in range(epochs):
+        # Training phase
         model.train()
-        running_loss = 0.0
+        train_losses = []
         
-        for batch_idx, (data, target) in enumerate(train_loader):
-            data, target = data.to(device), target.to(device)
+        for batch in train_loader:
+            x, y = batch
+            x, y = x.to(device), y.to(device)
             
-            # Zero the parameter gradients
+            # Get batch size and reshape input
+            b = x.size(0)
+            x = x.view(b, -1)
+            
+            # 1) Clear previous gradients
             optimizer.zero_grad()
             
-            # Forward pass
-            output = model(data)
-            loss = criterion(output, target)
+            # 2) Forward pass
+            logits = model(x)
             
-            # Backward pass and optimize
+            # 3) Compute loss
+            loss = criterion(logits, y)
+            
+            # 4) Compute gradients
             loss.backward()
+            
+            # 5) Update weights
             optimizer.step()
             
-            running_loss += loss.item()
-            
-            # Print statistics
-            if batch_idx % 100 == 99:
-                print(f'Epoch: {epoch+1}/{epochs}, Batch: {batch_idx+1}/{len(train_loader)}, Loss: {running_loss/100:.4f}')
-                train_losses.append(running_loss/100)
-                running_loss = 0.0
+            train_losses.append(loss.item())
         
-        # Evaluate on test set
+        avg_train_loss = torch.tensor(train_losses).mean().item()
+        print(f"Epoch {epoch + 1}, Training Loss: {avg_train_loss:.4f}")
+        
+        # Validation phase
         model.eval()
-        test_loss = 0
+        val_losses = []
         correct = 0
         total = 0
+        
         with torch.no_grad():
-            for data, target in test_loader:
-                data, target = data.to(device), target.to(device)
-                outputs = model(data)
-                loss = criterion(outputs, target)
-                test_loss += loss.item()
-                _, predicted = torch.max(outputs.data, 1)
-                total += target.size(0)
-                correct += (predicted == target).sum().item()
+            for batch in val_loader:
+                x, y = batch
+                x, y = x.to(device), y.to(device)
+                
+                # Reshape input
+                b = x.size(0)
+                x = x.view(b, -1)
+                
+                # Forward pass
+                logits = model(x)
+                
+                # Compute loss
+                loss = criterion(logits, y)
+                val_losses.append(loss.item())
+                
+                # Calculate accuracy
+                _, predicted = torch.max(logits.data, 1)
+                total += y.size(0)
+                correct += (predicted == y).sum().item()
         
-        avg_test_loss = test_loss / len(test_loader)
+        avg_val_loss = torch.tensor(val_losses).mean().item()
         accuracy = 100 * correct / total
-        test_losses.append(avg_test_loss)
-        test_accuracies.append(accuracy)
-        
-        print(f'Epoch {epoch+1}, Test Loss: {avg_test_loss:.4f}, Test Accuracy: {accuracy:.2f}%')
-        
-        # Update learning rate
-        scheduler.step(avg_test_loss)
+        print(f"Epoch {epoch + 1}, Validation Loss: {avg_val_loss:.4f}, Validation Accuracy: {accuracy:.2f}%")
         
         # Save the best model
         if accuracy > best_accuracy:
             best_accuracy = accuracy
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             torch.save(model.state_dict(), save_path)
-            print(f'Improved accuracy from {best_accuracy:.2f}% to {accuracy:.2f}%, saving model to {save_path}')
-
-    print(f'Best Test Accuracy: {best_accuracy:.2f}%')
+            print(f"Model improved! Saving model with accuracy: {accuracy:.2f}%")
     
-    # Plot training and test loss
-    plt.figure(figsize=(10, 5))
-    plt.subplot(1, 2, 1)
-    plt.plot(train_losses, label='Training Loss')
-    plt.plot(test_losses, label='Test Loss')
-    plt.legend()
-    plt.title('Losses')
+    # Final evaluation on test set
+    model.eval()
+    test_correct = 0
+    test_total = 0
     
-    plt.subplot(1, 2, 2)
-    plt.plot(test_accuracies, label='Test Accuracy')
-    plt.legend()
-    plt.title('Test Accuracy')
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            data = data.view(data.size(0), -1)
+            
+            outputs = model(data)
+            _, predicted = torch.max(outputs.data, 1)
+            test_total += target.size(0)
+            test_correct += (predicted == target).sum().item()
     
-    # Save the plot
-    os.makedirs('mnist_app/model/plots', exist_ok=True)
-    plt.savefig('mnist_app/model/plots/training_plots.png')
+    test_accuracy = 100 * test_correct / test_total
+    print(f"Final Test Accuracy: {test_accuracy:.2f}%")
     
     return model
 
@@ -182,7 +161,7 @@ def test_with_sample_images(model_path='mnist_app/model/saved_model/mnist_cnn.pt
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     
-    # Load some test samples
+    # --- Apply same transform (including normalization) for testing --- 
     test_transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -196,18 +175,23 @@ def test_with_sample_images(model_path='mnist_app/model/saved_model/mnist_cnn.pt
     # Plot the samples and predictions
     plt.figure(figsize=(15, 8))
     for i, (image, label) in enumerate(samples):
-        image = image.to(device).unsqueeze(0)
+        # Prepare image for model
+        image_tensor = image.to(device).view(1, -1)  # Flatten
+        
+        # Get prediction
         with torch.no_grad():
-            output = model(image)
+            output = model(image_tensor)
             probabilities = F.softmax(output, dim=1)
             pred = torch.argmax(output, dim=1).item()
             confidence = probabilities[0][pred].item()
         
+        # Plot
         plt.subplot(2, 5, i+1)
-        plt.imshow(image.cpu().squeeze().numpy(), cmap='gray')
+        plt.imshow(image.squeeze().numpy(), cmap='gray')
         plt.title(f"True: {label}, Pred: {pred}\nConf: {confidence:.2f}")
         plt.axis('off')
     
+    # Save plot
     os.makedirs('mnist_app/model/plots', exist_ok=True)
     plt.savefig('mnist_app/model/plots/sample_predictions.png')
     plt.close()
@@ -215,6 +199,6 @@ def test_with_sample_images(model_path='mnist_app/model/saved_model/mnist_cnn.pt
     print("Sample predictions saved to mnist_app/model/plots/sample_predictions.png")
 
 if __name__ == "__main__":
-    train_model(epochs=10)
+    train_model(epochs=5)
     test_with_sample_images() 
     

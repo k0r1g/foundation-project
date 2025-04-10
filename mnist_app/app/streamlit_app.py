@@ -3,194 +3,285 @@ import numpy as np
 from PIL import Image
 import io
 import time
+import pandas as pd
+from datetime import datetime
+import sys
+import os
+import logging
 from mnist_app.model.predict import MNISTPredictor
 from mnist_app.database.db import Database, check_db_connection
 
-# Initialize the predictor and database
+# Set up proper file logging
+LOG_DIR = "/app/logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(f"{LOG_DIR}/app.log"),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger("mnist_app")
+
+logger.info("StreamlitApp starting")
+
+# Initialize history in session state if not present
+if "history" not in st.session_state:
+    st.session_state.history = []
+    logger.info("Initialized empty history")
+    
+# Initialize prediction state
+if "predicted_digit" not in st.session_state:
+    st.session_state.predicted_digit = None
+    st.session_state.confidence = None
+    logger.info("Initialized prediction state to None")
+    
+# Clear prediction when canvas changes
+def reset_prediction():
+    st.session_state.predicted_digit = None
+    st.session_state.confidence = None
+    logger.info("Prediction state reset due to new drawing")
+
+# Load predictor with caching
 @st.cache_resource
 def load_predictor():
-    return MNISTPredictor()
+    logger.info("Loading MNIST predictor model")
+    try:
+        predictor = MNISTPredictor()
+        logger.info("MNIST predictor loaded successfully")
+        return predictor
+    except Exception as e:
+        logger.error(f"Error loading predictor: {e}")
+        return None
 
+# Load database with caching
 @st.cache_resource
 def load_database():
-    return Database()
-
-# Function to convert the drawing to the right format
-def process_drawing(drawing_data):
-    """Process the drawing data from the canvas."""
-    # The drawing comes as a base64 encoded string
-    # We convert it to a numpy array
-    if drawing_data is None:
-        return None
-    
+    logger.info("Connecting to database")
     try:
-        # Convert to PIL Image
-        image = Image.open(io.BytesIO(drawing_data.encode())).convert('L')
-        
-        # Convert to numpy array and invert colors (MNIST has white digits on black background)
-        img_array = 255 - np.array(image)
-        
-        return img_array
+        db = Database()
+        logger.info("Database connection successful")
+        return db
     except Exception as e:
-        st.error(f"Error processing drawing: {e}")
+        logger.error(f"Error connecting to database: {e}")
         return None
 
 def main():
-    st.title("MNIST Digit Recognizer")
+    # Title with styled heading
+    st.markdown("<h1 style='text-align: center; color: orange;'>Digit Recognizer</h1>", unsafe_allow_html=True)
     
     # Load predictor and database
     try:
         predictor = load_predictor()
         db = load_database()
+        db_connected = check_db_connection() if db else False
+        logger.info(f"Database connected: {db_connected}")
     except Exception as e:
+        logger.error(f"Error loading predictor or database: {e}")
         st.error(f"Error loading predictor or database: {e}")
+        db_connected = False
         return
     
-    # Check database connection
-    db_connected = check_db_connection()
     if not db_connected:
         st.warning("⚠️ Database connection failed. Predictions will not be logged.")
     
-    # Create a canvas for drawing
-    st.write("Draw a digit (0-9) in the canvas below:")
+    # Layout split: Canvas on the left, prediction on the right
+    col1, col2 = st.columns([2, 1])
     
-    # We'll use the streamlit-drawable-canvas component for drawing
-    try:
-        from streamlit_drawable_canvas import st_canvas
-        
-        canvas_result = st_canvas(
-            fill_color="black",
-            stroke_width=20,
-            stroke_color="white",
-            background_color="black",
-            height=280,
-            width=280,
-            drawing_mode="freedraw",
-            key="canvas",
-        )
-        
-        # Get the drawing data
-        if canvas_result.image_data is not None:
-            # Convert the RGBA image to grayscale
-            img_array = np.mean(canvas_result.image_data, axis=2).astype(np.uint8)
+    with col1:
+        st.markdown("### ① Draw number")
+        try:
+            from streamlit_drawable_canvas import st_canvas
             
-            # Display the processed image
-            st.image(img_array, caption="Processed Image", width=150)
-        else:
-            img_array = None
-    except ImportError:
-        st.error("The streamlit-drawable-canvas package is not installed. Please install it with: pip install streamlit-drawable-canvas")
-        
-        # As a fallback, use a file uploader
-        st.write("Or upload an image of a digit:")
-        uploaded_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
-        
-        if uploaded_file is not None:
-            # Read the image
-            image = Image.open(uploaded_file).convert('L')
-            img_array = np.array(image)
-            
-            # Display the uploaded image
-            st.image(img_array, caption="Uploaded Image", width=150)
-        else:
-            img_array = None
-    
-    # Prediction section
-    if st.button("Predict"):
-        if img_array is not None:
-            # Show loading spinner
-            with st.spinner("Predicting..."):
-                # Make prediction
-                predicted_digit, confidence = predictor.predict(img_array)
-                
-                # Store the prediction ID for later use
-                prediction_id = None
-                
-                # Log the prediction if database is connected
-                if db_connected:
-                    try:
-                        # Convert image to bytes for storage
-                        img_bytes = io.BytesIO()
-                        Image.fromarray(img_array).save(img_bytes, format="PNG")
-                        
-                        # Log to database
-                        prediction_id = db.log_prediction(
-                            predicted_digit=predicted_digit,
-                            confidence=confidence,
-                            image_data=img_bytes.getvalue()
-                        )
-                        st.session_state["last_prediction_id"] = prediction_id
-                    except Exception as e:
-                        st.error(f"Error logging prediction: {e}")
-            
-            # Display the prediction results
-            st.success(f"Prediction complete!")
-            st.subheader(f"Predicted Digit: {predicted_digit}")
-            st.subheader(f"Confidence: {confidence:.2%}")
-            
-            # Feedback section
-            st.write("Was this prediction correct? Please provide the true digit:")
-            
-            # Create a number input for the true label
-            true_label = st.number_input(
-                "True digit (0-9):",
-                min_value=0,
-                max_value=9,
-                step=1,
-                key="true_label"
+            # Create canvas for drawing
+            canvas_result = st_canvas(
+                fill_color="white",
+                stroke_width=15,
+                stroke_color="white",
+                background_color="black",  # Black background like MNIST
+                height=200,
+                width=200,
+                drawing_mode="freedraw",
+                key="canvas",
             )
             
-            if st.button("Submit Feedback"):
-                if db_connected:
-                    try:
-                        # Update the prediction with the true label
-                        if "last_prediction_id" in st.session_state:
-                            db.update_true_label(
-                                st.session_state["last_prediction_id"],
-                                true_label
-                            )
-                            st.success("Thank you for your feedback!")
-                    except Exception as e:
-                        st.error(f"Error updating true label: {e}")
-                else:
-                    st.warning("Database is not connected. Feedback not saved.")
-        else:
-            st.warning("Please draw or upload a digit first!")
+            # Display a "Predict" button
+            predict_clicked = st.button("Predict")
+            
+            # Check if we have a drawing and the button was clicked
+            if canvas_result.image_data is not None:
+                # Show the raw drawing
+                st.write("Raw drawing (for debugging):")
+                st.image(canvas_result.image_data, caption="Raw drawing")
+                
+                # Convert image for prediction
+                if predict_clicked:
+                    logger.info("Predict button clicked, processing image")
+                    
+                    # Get just the first channel since we're using white on black like MNIST
+                    img_array = canvas_result.image_data[:, :, 0].astype(np.uint8)
+                    
+                    # Create a PIL Image from the array
+                    img = Image.fromarray(img_array)
+                    
+                    # Save raw image for debugging
+                    img.save(f"{LOG_DIR}/raw_drawing.png")
+                    logger.info(f"Saved raw drawing to {LOG_DIR}/raw_drawing.png")
+                    
+                    # Display the processed image
+                    st.write("Processed drawing (for prediction):")
+                    st.image(img, caption="Processed for prediction")
+                    
+                    # Make prediction
+                    with st.spinner("Predicting..."):
+                        try:
+                            logger.info("Calling predict with image")
+                            predicted_digit, confidence = predictor.predict(np.array(img))
+                            logger.info(f"Prediction received: digit={predicted_digit}, confidence={confidence:.4f}")
+                            
+                            # Store in session state
+                            st.session_state.predicted_digit = predicted_digit
+                            st.session_state.confidence = confidence
+                            
+                            # Force a rerun to update the display
+                            st.experimental_rerun()
+                        except Exception as e:
+                            logger.error(f"Error during prediction: {e}", exc_info=True)
+                            st.error(f"Prediction error: {e}")
+            else:
+                logger.debug("No drawing detected yet")
+                
+        except ImportError as e:
+            logger.error(f"Import error: {e}")
+            st.error("The streamlit-drawable-canvas package is not installed. Please install it with: pip install streamlit-drawable-canvas")
     
-    # Display statistics if database is connected
+    with col2:
+        st.markdown("### ② Enter true value")
+        true_label = st.text_input("True label:", max_chars=1)
+        
+        # Display prediction if available
+        if st.session_state.predicted_digit is not None:
+            predicted_digit = st.session_state.predicted_digit
+            confidence = st.session_state.confidence
+            
+            # Display prediction results
+            st.markdown(f"**Prediction:** {predicted_digit}")
+            st.markdown(f"**Confidence:** {round(confidence * 100)}%")
+            logger.info(f"Displaying prediction: {predicted_digit} with confidence {confidence:.4f}")
+            
+            # Submit button for logging the feedback
+            if st.button("Submit"):
+                logger.info(f"Submit button clicked with true_label: {true_label}")
+                # Validate true label
+                if true_label and true_label.isdigit() and 0 <= int(true_label) <= 9:
+                    true_label_int = int(true_label)
+                    
+                    # Log to database if connected
+                    if db_connected and canvas_result.image_data is not None:
+                        try:
+                            # Convert image to bytes for storage
+                            img_bytes = io.BytesIO()
+                            img_array = canvas_result.image_data[:, :, 0].astype(np.uint8)
+                            img = Image.fromarray(img_array)
+                            img.save(img_bytes, format="PNG")
+                            
+                            # Log to database
+                            logger.info(f"Saving prediction to database: {predicted_digit} (true: {true_label_int})")
+                            prediction_id = db.log_prediction(
+                                predicted_digit=predicted_digit,
+                                confidence=confidence,
+                                true_label=true_label_int,
+                                image_data=img_bytes.getvalue()
+                            )
+                            
+                            # Show feedback
+                            if predicted_digit == true_label_int:
+                                st.success("Correct prediction! ✅")
+                            else:
+                                st.warning(f"Incorrect prediction! Model predicted {predicted_digit}, but true digit is {true_label_int}")
+                        except Exception as e:
+                            logger.error(f"Error logging prediction: {e}", exc_info=True)
+                            st.error(f"Error logging prediction: {e}")
+                    
+                    # Add to session history
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # Convert true_label_int to int to avoid type issues when displaying history
+                    st.session_state.history.append({
+                        "timestamp": timestamp,
+                        "pred": int(predicted_digit),
+                        "label": int(true_label_int),
+                        "confidence": f"{round(confidence * 100)}%"
+                    })
+                    logger.info(f"Added to session history, now has {len(st.session_state.history)} items")
+                    
+                    # Force a rerun to update the display
+                    st.experimental_rerun()
+                else:
+                    logger.error(f"Invalid true label: {true_label}")
+                    st.error("Please enter a valid digit (0-9)")
+        else:
+            st.info("Draw a digit and click 'Predict' to see the prediction")
+    
+    # Display history section
+    st.markdown("### ③ Display history")
+    if st.session_state.history:
+        logger.info(f"Displaying session history: {len(st.session_state.history)} items")
+
+        # Try to convert the session history to a dataframe
+        try:
+            # Preprocess history data for robust DataFrame creation
+            processed_history = []
+            for entry in st.session_state.history:
+                processed_entry = entry.copy()
+                # Ensure 'label' is numeric, replace non-digits with pd.NA or similar
+                try:
+                    processed_entry['label'] = int(entry['label'])
+                except (ValueError, TypeError):
+                    # Use pandas NA for missing/invalid numeric data
+                    processed_entry['label'] = pd.NA 
+                processed_history.append(processed_entry)
+
+            # Create DataFrame from processed data
+            df = pd.DataFrame(processed_history)
+            
+            # Define column order and display
+            df = df[['timestamp', 'pred', 'label', 'confidence']] # Explicitly order columns
+            st.dataframe(df)
+            logger.info("Successfully displayed history dataframe")
+        except Exception as e:
+            # Log the error and try a simpler version
+            logger.error(f"Error displaying history dataframe: {e}", exc_info=True)
+            st.error("Could not display history in table format. See below:")
+            # Display in a simpler format
+            for entry in st.session_state.history:
+                st.write(f"Time: {entry['timestamp']}, Predicted: {entry['pred']}, Actual: {entry.get('label', 'N/A')}, Confidence: {entry['confidence']}") # Use .get for safety
+    else:
+        # Only show "No prediction history yet" message
+        st.info("No prediction history yet. Make predictions and provide feedback to build history.")
+    
+    # Deployment information
+    st.markdown("### ④ Deployed to remote server")
+    server_url = "http://65.108.44.28"  # Updated to match the reference design
+    st.code(server_url)
+    
+    # Display statistics in sidebar
     if db_connected:
-        st.sidebar.title("Statistics")
         try:
             # Get accuracy statistics
             stats = db.get_accuracy_stats()
             
             # Display statistics
+            st.sidebar.title("Statistics")
             st.sidebar.metric("Accuracy", f"{stats['accuracy']:.2%}")
             st.sidebar.metric("Total Predictions with Feedback", stats['total_feedback'])
             st.sidebar.metric("Correct Predictions", stats['correct'])
-            
-            # Recent predictions
-            st.sidebar.title("Recent Predictions")
-            recent = db.get_recent_predictions(limit=5)
-            
-            for pred in recent:
-                col1, col2, col3 = st.sidebar.columns(3)
-                
-                # Display the image if available
-                if pred.image_data:
-                    img = Image.open(io.BytesIO(pred.image_data))
-                    col1.image(img, width=50)
-                
-                # Display prediction info
-                col2.write(f"Predicted: {pred.predicted_digit}")
-                
-                # Display true label if available
-                if pred.true_label is not None:
-                    col3.write(f"True: {pred.true_label}")
-                else:
-                    col3.write("True: N/A")
         except Exception as e:
+            logger.error(f"Error getting statistics: {e}", exc_info=True)
             st.sidebar.error(f"Error getting statistics: {e}")
 
 if __name__ == "__main__":
-    main() 
+    logger.info("Streamlit app main function starting")
+    main()
+    logger.info("Streamlit app main function completed") 
